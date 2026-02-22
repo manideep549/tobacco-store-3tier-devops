@@ -1,0 +1,28 @@
+
+- hosts: backend
+  become: yes
+
+  vars:
+    db_host: "{{ db_host }}"
+
+  tasks:
+    - name: Install Node
+      yum:
+        name: nodejs
+        state: present
+
+    - name: Copy App
+      copy:
+        src: ../app/backend/
+        dest: /home/ec2-user/app/
+
+    - name: Install Dependencies
+      shell: |
+        cd /home/ec2-user/app
+        npm install
+
+    - name: Start App
+      shell: |
+        cd /home/ec2-user/app
+        export DB_HOST={{ db_host }}
+        nohup node server.js &
