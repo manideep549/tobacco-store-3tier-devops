@@ -2,12 +2,10 @@ name: CI-CD 3-Tier App
 
 on:
   push:
-    branches-ignore:
-      - main
-  pull_request:
     branches:
       - main
-  push:
+      - '**'
+  pull_request:
     branches:
       - main
 
@@ -18,17 +16,16 @@ jobs:
 ############################################
 
   ci-validation:
-    if: github.ref != 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Validate Terraform
-        uses: hashicorp/setup-terraform@v2
+      - uses: hashicorp/setup-terraform@v2
 
-      - run: |
+      - name: Terraform Validate
+        run: |
           cd terraform
           terraform init
           terraform validate
@@ -47,60 +44,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Terraform Validate
-        uses: hashicorp/setup-terraform@v2
+      - uses: hashicorp/setup-terraform@v2
 
-      - run: |
+      - name: Terraform Plan
+        run: |
           cd terraform
           terraform init
           terraform validate
           terraform plan
 
 ############################################
-# Deploy Stage (Only When Merged to Main)
+# Deploy Stage (Only After Merge to Main)
 ############################################
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     env:
       ANSIBLE_HOST_KEY_CHECKING: False
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+      - uses: hashicorp/setup-terraform@v2
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      #########################################
-      # Terraform
-      #########################################
-
-      - name: Terraform Init
-        run: |
-          cd terraform
-          terraform init
-
       - name: Terraform Apply
         run: |
           cd terraform
+          terraform init
           terraform apply -auto-approve
-
-      #########################################
-      # Get Terraform Outputs
-      #########################################
 
       - name: Get Terraform Outputs
         run: |
@@ -118,11 +99,10 @@ jobs:
           sudo apt update
           sudo apt install ansible -y
 
-      - name: Create Inventory File
+      - name: Create Inventory
         run: |
           echo "[backend]" > inventory.ini
           echo "${BACKEND_IP} ansible_user=ec2-user ansible_ssh_private_key_file=key.pem" >> inventory.ini
-          cat inventory.ini
 
       - name: Deploy with Ansible
         run: |
