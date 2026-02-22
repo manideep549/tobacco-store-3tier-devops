@@ -1,40 +1,130 @@
-
-name: Deploy App
+name: CI-CD 3-Tier App
 
 on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
 
 jobs:
-  deploy:
+
+############################################
+# CI Stage (Feature Branch Push)
+############################################
+
+  ci-validation:
+    if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - uses: hashicorp/setup-terraform@v2
+      - name: Validate Terraform
+        uses: hashicorp/setup-terraform@v2
 
-      - uses: aws-actions/configure-aws-credentials@v2
+      - run: |
+          cd terraform
+          terraform init
+          terraform validate
+
+      - name: Validate Node App
+        run: |
+          cd app/backend
+          npm install
+
+############################################
+# UAT Stage (Pull Request to Main)
+############################################
+
+  uat-validation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Terraform Validate
+        uses: hashicorp/setup-terraform@v2
+
+      - run: |
+          cd terraform
+          terraform init
+          terraform validate
+          terraform plan
+
+############################################
+# Deploy Stage (Only When Merged to Main)
+############################################
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    env:
+      ANSIBLE_HOST_KEY_CHECKING: False
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - run: cd terraform && terraform init
-      - run: cd terraform && terraform apply -auto-approve
+      #########################################
+      # Terraform
+      #########################################
 
-      - run: |
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve
+
+      #########################################
+      # Get Terraform Outputs
+      #########################################
+
+      - name: Get Terraform Outputs
+        run: |
+          cd terraform
+          echo "BACKEND_IP=$(terraform output -raw backend_ip)" >> $GITHUB_ENV
+          echo "DB_ENDPOINT=$(terraform output -raw db_endpoint)" >> $GITHUB_ENV
+
+      - name: Setup SSH Key
+        run: |
           echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
           chmod 400 key.pem
 
-      - run: sudo apt update && sudo apt install ansible -y
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install ansible -y
 
-      - run: |
-          BACKEND_IP=$(cd terraform && terraform output -raw backend_ip)
-          DB_ENDPOINT=$(cd terraform && terraform output -raw db_endpoint)
-
+      - name: Create Inventory File
+        run: |
           echo "[backend]" > inventory.ini
-          echo "$BACKEND_IP ansible_user=ec2-user ansible_ssh_private_key_file=key.pem" >> inventory.ini
+          echo "${BACKEND_IP} ansible_user=ec2-user ansible_ssh_private_key_file=key.pem" >> inventory.ini
+          cat inventory.ini
 
-          ansible-playbook -i inventory.ini ansible/deploy.yml --extra-vars "db_host=$DB_ENDPOINT"
+      - name: Deploy with Ansible
+        run: |
+          ansible-playbook -i inventory.ini ansible/deploy.yml \
+          --extra-vars "db_host=${DB_ENDPOINT}"
